@@ -5,6 +5,7 @@
 
 import atexit
 import errno
+import json
 import logging
 import os
 import signal
@@ -260,12 +261,7 @@ class IPKernelApp(BaseIPythonApplication, InteractiveShellApp, ConnectionFileMix
     def write_connection_file(self):
         """write connection info to JSON file"""
         cf = self.abs_connection_file
-        if os.path.exists(cf):
-            self.log.debug("Connection file %s already exists", cf)
-            return
-        self.log.debug("Writing connection file: %s", cf)
-        write_connection_file(
-            cf,
+        connection_info = dict(
             ip=self.ip,
             key=self.session.key,
             transport=self.transport,
@@ -275,6 +271,21 @@ class IPKernelApp(BaseIPythonApplication, InteractiveShellApp, ConnectionFileMix
             iopub_port=self.iopub_port,
             control_port=self.control_port,
         )
+        if os.path.exists(cf):
+            # If the file exists, merge our info into it. For example, if the
+            # original file had port number 0, we update with the actual port
+            # used.
+            with open(cf, "r") as f:
+                existing_connection_info = json.load(f)
+
+            connection_info = dict(existing_connection_info, **connection_info)
+            if connection_info == existing_connection_info:
+                self.log.debug("Connection file %s with current information already exists", cf)
+                return
+
+        self.log.debug("Writing connection file: %s", cf)
+
+        write_connection_file(cf, **connection_info)
 
     def cleanup_connection_file(self):
         """Clean up our connection file."""
