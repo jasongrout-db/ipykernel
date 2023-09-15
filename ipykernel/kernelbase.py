@@ -330,6 +330,10 @@ class Kernel(SingletonConfigurable):
         header = msg["header"]
         msg_type = header["msg_type"]
 
+        print(f"Handling control message ${msg}")
+        self.log.debug("\n*** MESSAGE TYPE:%s***", msg_type)
+        self.log.debug("   Content: %s\n   --->\n   ", msg["content"])
+
         handler = self.control_handlers.get(msg_type, None)
         if handler is None:
             self.log.error("UNKNOWN CONTROL MESSAGE TYPE: %r", msg_type)
@@ -391,6 +395,8 @@ class Kernel(SingletonConfigurable):
         # Print some info about this message and leave a '--->' marker, so it's
         # easier to trace visually the message chain when debugging.  Each
         # handler prints its message at the end.
+        print(f"Handling control message ${msg}")
+
         self.log.debug("\n*** MESSAGE TYPE:%s***", msg_type)
         self.log.debug("   Content: %s\n   --->\n   ", msg["content"])
 

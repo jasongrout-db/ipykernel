@@ -347,6 +347,7 @@ class IPythonKernel(KernelBase):
         cell_id=None,
     ):
         """Handle code execution."""
+        print(f"Executing ${code}")
         shell = self.shell  # we'll need this a lot here
 
         self._forward_input(allow_stdin)
