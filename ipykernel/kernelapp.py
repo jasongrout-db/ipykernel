@@ -18,6 +18,7 @@ from logging import StreamHandler
 from pathlib import Path
 
 import zmq
+import zmq.asyncio
 from IPython.core.application import (  # type:ignore[attr-defined]
     BaseIPythonApplication,
     base_aliases,
@@ -135,6 +136,7 @@ class IPKernelApp(BaseIPythonApplication, InteractiveShellApp, ConnectionFileMix
     heartbeat = Instance(Heartbeat, allow_none=True)
 
     context: zmq.Context[t.Any] | None = Any()  # type:ignore[assignment]
+    acontext: zmq.asyncio.Context
     shell_socket = Any()
     control_socket = Any()
     debugpy_socket = Any()
@@ -374,6 +376,7 @@ class IPKernelApp(BaseIPythonApplication, InteractiveShellApp, ConnectionFileMix
         self.iopub_socket.linger = 1000
         self.iopub_port = self._bind_socket(self.iopub_socket, self.iopub_port)
         self.log.debug("iopub PUB Channel on port: %i" % self.iopub_port)
+
         self.configure_tornado_logger()
         self.iopub_thread = IOPubThread(self.iopub_socket, pipe=True)
         self.iopub_thread.start()

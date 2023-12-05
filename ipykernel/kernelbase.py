@@ -144,6 +144,7 @@ class Kernel(SingletonConfigurable):
     debug_shell_socket = Any()
 
     control_thread = Any()
+    subshell_threads = Any()
     iopub_socket = Any()
     iopub_thread = Any()
     stdin_socket = Any()
@@ -267,6 +268,7 @@ class Kernel(SingletonConfigurable):
         "abort_request",
         "debug_request",
         "usage_request",
+        "create_subshell_request",
     ]
 
     def __init__(self, **kwargs):
@@ -287,6 +289,11 @@ class Kernel(SingletonConfigurable):
         self._do_exec_accepted_params = _accepts_parameters(
             self.do_execute, ["cell_meta", "cell_id"]
         )
+
+        # Main shell thread.
+        self.acontext = zmq.asyncio.Context()
+        self.subshell_threads = {}
+        self._create_shell_thread(None)
 
     def dispatch_control(self, msg):
         self.control_queue.put_nowait(msg)
@@ -379,6 +386,7 @@ class Kernel(SingletonConfigurable):
         """dispatch shell requests"""
         if not self.session:
             return
+
         # flush control queue before handling shell requests
         await self._flush_control_queue()
 
@@ -469,11 +477,6 @@ class Kernel(SingletonConfigurable):
             if self.eventloop is not eventloop:
                 self.log.info("exiting eventloop %s", eventloop)
                 return
-            if self.msg_queue.qsize():
-                self.log.debug("Delaying eventloop due to waiting messages")
-                # still messages to process, make the eventloop wait
-                schedule_next()
-                return
             self.log.debug("Advancing eventloop %s", eventloop)
             try:
                 eventloop(self)
@@ -494,47 +497,6 @@ class Kernel(SingletonConfigurable):
         # begin polling the eventloop
         schedule_next()
 
-    async def do_one_iteration(self):
-        """Process a single shell message
-
-        Any pending control messages will be flushed as well
-
-        .. versionchanged:: 5
-            This is now a coroutine
-        """
-        # flush messages off of shell stream into the message queue
-        if self.shell_stream:
-            self.shell_stream.flush()
-        # process at most one shell message per iteration
-        await self.process_one(wait=False)
-
-    async def process_one(self, wait=True):
-        """Process one request
-
-        Returns None if no message was handled.
-        """
-        if wait:
-            t, dispatch, args = await self.msg_queue.get()
-        else:
-            try:
-                t, dispatch, args = self.msg_queue.get_nowait()
-            except (asyncio.QueueEmpty, QueueEmpty):
-                return
-        await dispatch(*args)
-
-    async def dispatch_queue(self):
-        """Coroutine to preserve order of message handling
-
-        Ensures that only one message is processing at a time,
-        even when the handler is async
-        """
-
-        while True:
-            try:
-                await self.process_one()
-            except Exception:
-                self.log.exception("Error in message handler")
-
     _message_counter = Any(
         help="""Monotonic counter of messages
         """,
@@ -544,25 +506,131 @@ class Kernel(SingletonConfigurable):
     def _message_counter_default(self):
         return itertools.count()
 
-    def schedule_dispatch(self, dispatch, *args):
-        """schedule a message for dispatch"""
+    async def new_shell_handler(self, msg):
+        # This runs in main thread, which is the shell message-handling thread.
         idx = next(self._message_counter)
+        msg_original = msg
 
-        self.msg_queue.put_nowait(
-            (
-                idx,
-                dispatch,
-                args,
-            )
+        # Need to decode message so can get shell_id
+
+        # flush control queue before handling shell requests
+        await self._flush_control_queue()  # Not sure about this here.
+
+        idents, msg = self.session.feed_identities(msg, copy=False)
+        try:
+            msg = self.session.deserialize(msg, content=True, copy=False)
+        except Exception:
+            self.log.error("Invalid Message", exc_info=True)  # noqa: G201
+            return
+
+        shell_id = msg["header"].get("shell_id")
+        # Should check that shell_id exists!
+        shell_thread = self.subshell_threads[shell_id]
+
+        shell_thread["socket"].send_pyobj((idents, msg))  # Pickled
+
+    async def _shell_thread_worker_impl(self, shell_id, acontext):
+        socket = acontext.socket(zmq.PAIR)
+        socket.connect(f"inproc://shell-{shell_id}")
+
+        while True:
+            # message = await socket.recv_json()  # Fails as datetime not JSON-serializable
+            message = await socket.recv_pyobj()  # Pickled - works
+            await self.new_dispatch_shell(message)
+
+            # Need to send response back to main (shell message-handling) thread via inproc socket?
+
+    async def new_dispatch_shell(self, msg):
+        """dispatch shell requests"""
+        if not self.session:
+            return
+
+        # Should probably check shell_id is correct.
+
+        idents, msg = msg
+
+        # Set the parent message for side effects.
+        self.set_parent(idents, msg, channel="shell")
+
+        self._publish_status("busy", "shell")
+
+        msg_type = msg["header"]["msg_type"]
+
+        # Only abort execute requests
+        # if self._aborting and msg_type == "execute_request":
+        #     self._send_abort_reply(self.shell_stream, msg, idents)
+        #     self._publish_status("idle", "shell")
+        # flush to ensure reply is sent before
+        # handling the next request
+        #     if self.shell_stream:
+        #         self.shell_stream.flush(zmq.POLLOUT)
+        #         return
+
+        # Print some info about this message and leave a '--->' marker, so it's
+        # easier to trace visually the message chain when debugging.  Each
+        # handler prints its message at the end.
+        self.log.debug("\n*** MESSAGE TYPE:%s***", msg_type)
+        self.log.debug("   Content: %s\n   --->\n   ", msg["content"])
+
+        if not self.should_handle(self.shell_stream, msg, idents):
+            return
+
+        handler = self.shell_handlers.get(msg_type, None)
+        if handler is None:
+            self.log.warning("Unknown message type: %r", msg_type)
+        else:
+            self.log.debug("%s: %s", msg_type, msg)
+            try:
+                self.pre_handler_hook()
+            except Exception:
+                self.log.debug("Unable to signal in pre_handler_hook:", exc_info=True)
+            try:
+                result = handler(self.shell_stream, idents, msg)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                self.log.error("Exception in message handler:", exc_info=True)  # noqa: G201
+            except KeyboardInterrupt:
+                # Ctrl-c shouldn't crash the kernel here.
+                self.log.error("KeyboardInterrupt caught in kernel.")
+            finally:
+                try:
+                    self.post_handler_hook()
+                except Exception:
+                    self.log.debug("Unable to signal in post_handler_hook:", exc_info=True)
+
+        #        sys.stdout.flush()  # Not sure this is needed.
+        #        sys.stderr.flush()
+        self._publish_status("idle", "shell")
+        # flush to ensure reply is sent before
+        # handling the next request
+
+        if self.shell_stream:
+            self.shell_stream.flush(zmq.POLLOUT)
+
+    def _shell_thread_worker(self, shell_id, acontext):
+        asyncio.run(self._shell_thread_worker_impl(shell_id, acontext))
+
+    def _create_shell_thread(self, shell_id):
+        # Communicate with shell thread using inproc PAIR socket.
+        acontext = self.acontext
+        socket = acontext.socket(zmq.PAIR)
+        socket.bind(f"inproc://shell-{shell_id}")
+
+        thread = threading.Thread(
+            name="shell",
+            target=self._shell_thread_worker,
+            args=(shell_id, acontext),
         )
-        # ensure the eventloop wakes up
-        self.io_loop.add_callback(lambda: None)
+        self.subshell_threads[shell_id] = {
+            "thread": thread,
+            "socket": socket,
+        }
+        thread.start()
 
     def start(self):
         """register dispatchers for streams"""
         self.io_loop = ioloop.IOLoop.current()
-        self.msg_queue: Queue[t.Any] = Queue()
-        self.io_loop.add_callback(self.dispatch_queue)
 
         if self.control_stream:
             self.control_stream.on_recv(self.dispatch_control, copy=False)
@@ -571,13 +639,7 @@ class Kernel(SingletonConfigurable):
 
         asyncio.run_coroutine_threadsafe(self.poll_control_queue(), control_loop.asyncio_loop)
         if self.shell_stream:
-            self.shell_stream.on_recv(
-                partial(
-                    self.schedule_dispatch,
-                    self.dispatch_shell,
-                ),
-                copy=False,
-            )
+            self.shell_stream.on_recv(self.new_shell_handler, copy=False)
 
         # publish idle status
         self._publish_status("starting", "shell")
@@ -1081,6 +1143,18 @@ class Kernel(SingletonConfigurable):
 
     async def do_debug_request(self, msg):
         raise NotImplementedError
+
+    async def create_subshell_request(self, stream, ident, parent):
+        shell_id = str(uuid.uuid4())
+
+        # Create and start subshell thread.
+        self._create_shell_thread(shell_id)
+
+        content = {
+            "status": "ok",
+            "shell_id": shell_id,
+        }
+        self.session.send(stream, "create_subshell_reply", content, parent, ident)
 
     # ---------------------------------------------------------------------------
     # Engine methods (DEPRECATED)
