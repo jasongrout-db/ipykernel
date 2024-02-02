@@ -201,6 +201,33 @@ class ZMQDisplayPublisher(DisplayPublisher):
             return False
 
 
+def _print_subshell_info():
+    # Should really get subshell_id from the execute_request header
+    # but here using the current thread id
+    import threading
+
+    from ipykernel.kernelapp import IPKernelApp
+
+    thread = threading.current_thread()
+
+    if not IPKernelApp.initialized():
+        msg = "Not in a running Kernel"
+        raise RuntimeError(msg)
+
+    app = IPKernelApp.instance()
+    kernel = app.kernel
+    subshell_threads = kernel.subshell_threads  # dict of shell_id -> dict of "thread" and "socket"
+    thread_to_subshell = {v["thread"]: k for k, v in subshell_threads.items()}
+    subshell_id = thread_to_subshell[thread]
+
+    print("subshell type: kernel subshells")
+    print(f"subshell id: {subshell_id}")
+    print(f"number of subshells: {len(subshell_threads)}")
+    print(f"all subshell ids: {list(subshell_threads.keys())}")
+    print(f"pid: {os.getpid()}")
+    print(f"thread id: {thread.ident}")
+
+
 @magics_class
 class KernelMagics(Magics):
     """Kernel magics."""
@@ -353,6 +380,10 @@ class KernelMagics(Magics):
             """Find the man page for the given command and display in pager."""
             assert self.shell is not None
             page.page(self.shell.getoutput("man %s | col -b" % arg_s, split=False))
+
+    @line_magic
+    def subshell(self, arg_s):
+        _print_subshell_info()
 
     @line_magic
     def connect_info(self, arg_s):
