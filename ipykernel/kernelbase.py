@@ -618,7 +618,7 @@ class Kernel(SingletonConfigurable):
         socket.bind(f"inproc://shell-{shell_id}")
 
         thread = threading.Thread(
-            name="shell",
+            name=f"shell-{shell_id}",
             target=self._shell_thread_worker,
             args=(shell_id, acontext),
         )
