@@ -1145,10 +1145,13 @@ class Kernel(SingletonConfigurable):
         raise NotImplementedError
 
     async def create_subshell_request(self, stream, ident, parent):
-        shell_id = str(uuid.uuid4())
+        shell_id = parent.get("content", {}).get("shell_id", None)
+        if shell_id is None:
+            shell_id = str(uuid.uuid4())
 
-        # Create and start subshell thread.
-        self._create_shell_thread(shell_id)
+        if shell_id not in self.subshell_threads:
+            # Create and start subshell thread.
+            self._create_shell_thread(shell_id)
 
         content = {
             "status": "ok",
