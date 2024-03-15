@@ -545,11 +545,17 @@ class Kernel(SingletonConfigurable):
         if not self.session:
             return
 
-        # Should probably check shell_id is correct.
-
         idents, msg = msg
 
+        # Check if shell_id is correct
+        shell_id = msg["header"].get("shell_id", None)
+        shell_thread_name = f"shell-{shell_id}" if shell_id is not None else "shell"
+        if threading.current_thread().name != shell_thread_name:
+            self.log.warning(f"message sent to wrong shell id. Addressed to shell_id {shell_id}, but received in {threading.current_thread().name} thread. Ignoring message.")
+            return
+
         # Set the parent message for side effects.
+        # TODO: use a parent per shell_id, not just one for all shells
         self.set_parent(idents, msg, channel="shell")
 
         self._publish_status("busy", "shell")
