@@ -974,7 +974,7 @@ class Kernel(SingletonConfigurable):
         content = {"status": "ok"}
         content.update(self.kernel_info)
         msg = self.session.send(stream, "kernel_info_reply", content, parent, ident)
-        self.log(logging.ERROR, f"kernel_info_reply stream: {stream}, ident: {ident}, parent: {parent}")
+        self.log.error(f"kernel_info_reply stream: {stream}, ident: {ident}, parent: {parent}")
         self.log.debug("%s", msg)
 
     async def comm_info_request(self, stream, ident, parent):
@@ -1158,7 +1158,7 @@ class Kernel(SingletonConfigurable):
             "status": "ok",
             "shell_id": shell_id,
         }
-        self.log(logging.ERROR, f"create_subshell_reply stream: {stream}, ident: {ident}, parent: {parent}")
+        self.log.error(f"create_subshell_reply stream: {stream}, ident: {ident}, parent: {parent}")
         self.session.send(stream, "create_subshell_reply", content, parent, ident)
 
     # ---------------------------------------------------------------------------
