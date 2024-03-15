@@ -617,8 +617,9 @@ class Kernel(SingletonConfigurable):
         socket = acontext.socket(zmq.PAIR)
         socket.bind(f"inproc://shell-{shell_id}")
 
+        name = f"shell-{shell_id}" if shell_id is not None else "shell"
         thread = threading.Thread(
-            name=f"shell-{shell_id}",
+            name=name,
             target=self._shell_thread_worker,
             args=(shell_id, acontext),
         )
