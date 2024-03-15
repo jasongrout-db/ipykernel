@@ -398,7 +398,7 @@ class Kernel(SingletonConfigurable):
             return
 
         # Set the parent message for side effects.
-        self.set_parent(idents, msg, channel="shell")
+        self.set_parent(idents, msg, channel=threading.current_thread().getName())
         self._publish_status("busy", "shell")
 
         msg_type = msg["header"]["msg_type"]
@@ -556,9 +556,9 @@ class Kernel(SingletonConfigurable):
 
         # Set the parent message for side effects.
         # TODO: use a parent per shell_id, not just one for all shells
-        self.set_parent(idents, msg, channel="shell")
+        self.set_parent(idents, msg, channel=threading.current_thread().getName())
 
-        self._publish_status("busy", "shell")
+        self._publish_status("busy", threading.current_thread().getName())
 
         msg_type = msg["header"]["msg_type"]
 
